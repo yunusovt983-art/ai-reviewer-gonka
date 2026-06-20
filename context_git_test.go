@@ -57,7 +57,7 @@ func TestGetDiffReturnsRawGitDiff(t *testing.T) {
 	}()
 
 	fs := &FilterSet{}
-	diff, err := fs.GetDiff(baseSHA, headSHA)
+	diff, err := GetDiff(fs, baseSHA, headSHA)
 	if err != nil {
 		t.Fatalf("GetDiff() error = %v", err)
 	}

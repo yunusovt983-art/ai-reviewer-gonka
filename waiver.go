@@ -7,10 +7,7 @@ import (
 	"strings"
 )
 
-type LineRange struct {
-	Start int `yaml:"start"`
-	End   int `yaml:"end"`
-}
+// LineRange is defined in internal/domain/codebase and aliased in context.go.
 
 type Waiver struct {
 	ID            string    `yaml:"id"`

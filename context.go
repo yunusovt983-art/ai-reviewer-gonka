@@ -5,294 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/karagenc/go-pathspec"
+	"ai-reviewer/internal/domain/codebase"
+
 	"github.com/pkoukk/tiktoken-go"
 )
 
-type PRInfo struct {
-	Title        string    `json:"title"`
-	Body         string    `json:"body"`
-	BaseRefName  string    `json:"baseRefName"`
-	BaseRefOid   string    `json:"baseRefOid"`
-	HeadRefName  string    `json:"headRefName"`
-	HeadRefOid   string    `json:"headRefOid"`
-	IsCommit     bool      `json:"isCommit"`
-	CommitDate   time.Time `json:"commitDate"`
-	FilePatterns []string  `json:"filePatterns"`
-}
+// Domain model lives in internal/domain/codebase. These aliases keep the rest of
+// package main (and its tests) referring to the types/functions unqualified while
+// the pure logic is owned by the domain package. Git acquisition (below) is infra
+// and depends on the domain, not the reverse.
+type (
+	PRInfo           = codebase.PRInfo
+	PRContext        = codebase.PRContext
+	FileContext      = codebase.FileContext
+	FilterSet        = codebase.FilterSet
+	MatchOptions     = codebase.MatchOptions
+	FileMatchOptions = codebase.FileMatchOptions
+	LineRange        = codebase.LineRange
+)
 
-type PRContext struct {
-	Title       string
-	Description string
-	Files       []FileContext
-	Branch      string
-	CommitDate  time.Time
-}
-
-type FileContext struct {
-	Filename     string
-	Diff         string   // Annotated diff for this file
-	ChangedLines []string // Content of both added and removed lines
-	Functions    []string
-}
-
-type FilterSet struct {
-	IncludeFilters    []string         `yaml:"path_filters"`
-	ExcludeFilters    []string         `yaml:"exclude_filters"`
-	GlobalExcludes    []string         `yaml:"-"` // Passed from Config
-	RegexFilters      []*regexp.Regexp `yaml:"-"`
-	RawRegexFilters   []string         `yaml:"regex_filters"`
-	BranchFilters     []string         `yaml:"branch_filters"`
-	FunctionFilters   []string         `yaml:"function_filters"`
-	LineNumberFilters []LineRange      `yaml:"line_numbers_filter"`
-	DateFilter        string           `yaml:"date_filter"`
-	IssueRegexes      []string         `yaml:"issue_regexes"`
-	IssueRegexObjects []*regexp.Regexp `yaml:"-"`
-
-	Any []FilterSet `yaml:"any,omitempty"`
-	All []FilterSet `yaml:"all,omitempty"`
-}
-
-type MatchOptions struct {
-	Filename           string
-	Branch             string
-	Functions          []string
-	CommitDate         time.Time
-	ChangedLineNumbers []int
-	ChangedLines       []string
-	FindingSummary     string
-	FindingDetails     string
-}
-
-func (fs *FilterSet) IsEmpty() bool {
-	return len(fs.IncludeFilters) == 0 &&
-		len(fs.ExcludeFilters) == 0 &&
-		len(fs.RawRegexFilters) == 0 &&
-		len(fs.BranchFilters) == 0 &&
-		len(fs.FunctionFilters) == 0 &&
-		len(fs.LineNumberFilters) == 0 &&
-		fs.DateFilter == "" &&
-		len(fs.IssueRegexes) == 0 &&
-		len(fs.Any) == 0 &&
-		len(fs.All) == 0
-}
-
-func (fs *FilterSet) Matches(opts MatchOptions) bool {
-	if len(fs.Any) > 0 {
-		for _, sub := range fs.Any {
-			if sub.Matches(opts) {
-				return true
-			}
-		}
-		return false
-	}
-
-	if len(fs.All) > 0 {
-		for _, sub := range fs.All {
-			if !sub.Matches(opts) {
-				return false
-			}
-		}
-		return true
-	}
-
-	if !fs.MatchesPath(opts.Filename) {
-		return false
-	}
-
-	if len(fs.BranchFilters) > 0 {
-		if !pathIncluded(opts.Branch, fs.BranchFilters, true) {
-			return false
-		}
-	}
-
-	if len(fs.FunctionFilters) > 0 {
-		matched := false
-	loop:
-		for _, ff := range fs.FunctionFilters {
-			for _, fn := range opts.Functions {
-				if fn == ff {
-					matched = true
-					break loop
-				}
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if fs.DateFilter != "" && !opts.CommitDate.IsZero() {
-		cutoff, err := time.Parse("2006-01-02", fs.DateFilter)
-		if err == nil {
-			if !opts.CommitDate.Before(cutoff) {
-				return false
-			}
-		}
-	}
-
-	if len(fs.LineNumberFilters) > 0 {
-		matched := false
-		for _, line := range opts.ChangedLineNumbers {
-			for _, r := range fs.LineNumberFilters {
-				if line >= r.Start && line <= r.End {
-					matched = true
-					break
-				}
-			}
-			if matched {
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if len(fs.IssueRegexObjects) > 0 {
-		matched := false
-		for _, re := range fs.IssueRegexObjects {
-			if re.MatchString(opts.FindingSummary) || re.MatchString(opts.FindingDetails) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if len(fs.RegexFilters) == 0 {
-		return true
-	}
-	for _, line := range opts.ChangedLines {
-		for _, re := range fs.RegexFilters {
-			if re.MatchString(line) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-type FileMatchOptions struct {
-	FilterSet      *FilterSet
-	Branch         string
-	CommitDate     time.Time
-	FindingSummary string
-	FindingDetails string
-}
-
-func (f FileContext) Matches(opts FileMatchOptions) bool {
-	if opts.FilterSet == nil {
-		return true
-	}
-	return opts.FilterSet.Matches(MatchOptions{
-		Filename:           f.Filename,
-		Branch:             opts.Branch,
-		Functions:          f.Functions,
-		CommitDate:         opts.CommitDate,
-		ChangedLineNumbers: f.ChangedLineNumbers(),
-		ChangedLines:       f.ChangedLines,
-		FindingSummary:     opts.FindingSummary,
-		FindingDetails:     opts.FindingDetails,
-	})
-}
-
-func (f FileContext) HasChangedLinesInRanges(ranges []LineRange) bool {
-	if len(ranges) == 0 {
-		return true
-	}
-
-	for _, line := range f.ChangedLineNumbers() {
-		for _, r := range ranges {
-			if line >= r.Start && line <= r.End {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-func (f FileContext) ChangedLineNumbers() []int {
-	seen := make(map[int]struct{})
-	var lines []int
-
-	for _, line := range strings.Split(f.Diff, "\n") {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) < 2 {
-			continue
-		}
-
-		lineNo, err := strconv.Atoi(parts[0])
-		if err != nil {
-			continue
-		}
-
-		diffLine := parts[1]
-		if !strings.HasPrefix(diffLine, "+") && !strings.HasPrefix(diffLine, "-") {
-			continue
-		}
-		if strings.HasPrefix(diffLine, "+++ ") || strings.HasPrefix(diffLine, "--- ") {
-			continue
-		}
-		if _, ok := seen[lineNo]; ok {
-			continue
-		}
-
-		seen[lineNo] = struct{}{}
-		lines = append(lines, lineNo)
-	}
-
-	return lines
-}
-
-func (ctx *PRContext) ChangedFiles() []string {
-	var files []string
-	for _, f := range ctx.Files {
-		files = append(files, f.Filename)
-	}
-	return files
-}
-
-func (ctx *PRContext) FullDiff() string {
-	var sb strings.Builder
-	for _, f := range ctx.Files {
-		sb.WriteString(f.Diff)
-	}
-	return sb.String()
-}
-
-func ParseAnnotatedFileDiff(fd string) FileContext {
-	lines := strings.Split(fd, "\n")
-	var filename string
-	var changedLines []string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "+++ b/") {
-			filename = strings.TrimPrefix(line, "+++ b/")
-			continue
-		}
-
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) < 2 {
-			continue
-		}
-		diffLine := parts[1]
-
-		if (strings.HasPrefix(diffLine, "+") && !strings.HasPrefix(diffLine, "+++ ")) ||
-			(strings.HasPrefix(diffLine, "-") && !strings.HasPrefix(diffLine, "--- ")) {
-			content := diffLine[1:]
-			changedLines = append(changedLines, content)
-		}
-	}
-	return FileContext{Filename: filename, Diff: fd, ChangedLines: changedLines}
-}
+var (
+	AnnotateDiff          = codebase.AnnotateDiff
+	ParseAnnotatedFileDiff = codebase.ParseAnnotatedFileDiff
+	pathIncluded          = codebase.PathIncluded
+)
 
 func GetPRInfo(repo, prNumber string) (*PRInfo, error) {
 	fmt.Printf("    -> Running gh pr view %s...\n", prNumber)
@@ -414,7 +153,7 @@ func GetFileInfo(repo, branch string, filePatterns []string) (*PRInfo, error) {
 
 	// Resolve patterns to actual files
 	fs := &FilterSet{IncludeFilters: filePatterns}
-	files, err := fs.GetFilesForPatterns(branch)
+	files, err := GetFilesForPatterns(fs, branch)
 	if err != nil {
 		return nil, err
 	}
@@ -495,34 +234,6 @@ func GetBranchesInfo(repo, base, head string) (*PRInfo, error) {
 	}, nil
 }
 
-func (fs *FilterSet) Compile() error {
-	for _, r := range fs.RawRegexFilters {
-		re, err := regexp.Compile(r)
-		if err != nil {
-			return fmt.Errorf("invalid regex %s: %w", r, err)
-		}
-		fs.RegexFilters = append(fs.RegexFilters, re)
-	}
-	for _, r := range fs.IssueRegexes {
-		re, err := regexp.Compile(r)
-		if err != nil {
-			return fmt.Errorf("invalid issue regex %s: %w", r, err)
-		}
-		fs.IssueRegexObjects = append(fs.IssueRegexObjects, re)
-	}
-	for i := range fs.Any {
-		if err := fs.Any[i].Compile(); err != nil {
-			return err
-		}
-	}
-	for i := range fs.All {
-		if err := fs.All[i].Compile(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func GetPRContext(prInfo *PRInfo, fs *FilterSet) (*PRContext, error) {
 	if fs != nil {
 		if err := fs.Compile(); err != nil {
@@ -536,7 +247,7 @@ func GetPRContext(prInfo *PRInfo, fs *FilterSet) (*PRContext, error) {
 		if fsToUse == nil {
 			fsToUse = &FilterSet{}
 		}
-		files, err := fsToUse.GetFilesForPatterns(prInfo.HeadRefOid)
+		files, err := GetFilesForPatterns(fsToUse, prInfo.HeadRefOid)
 		if err != nil {
 			return nil, err
 		}
@@ -591,7 +302,7 @@ func GetPRContext(prInfo *PRInfo, fs *FilterSet) (*PRContext, error) {
 	if fsToUse == nil {
 		fsToUse = &FilterSet{}
 	}
-	diff, err := fsToUse.GetDiff(prInfo.BaseRefOid, prInfo.HeadRefOid)
+	diff, err := GetDiff(fsToUse, prInfo.BaseRefOid, prInfo.HeadRefOid)
 	if err != nil {
 		return nil, err
 	}
@@ -632,62 +343,10 @@ func GetPRContext(prInfo *PRInfo, fs *FilterSet) (*PRContext, error) {
 	}, nil
 }
 
-func (fs *FilterSet) MatchesPath(path string) bool {
-	if len(fs.Any) > 0 {
-		for _, sub := range fs.Any {
-			if sub.MatchesPath(path) {
-				return true
-			}
-		}
-		return false
-	}
-
-	if len(fs.All) > 0 {
-		for _, sub := range fs.All {
-			if !sub.MatchesPath(path) {
-				return false
-			}
-		}
-		return true
-	}
-
-	if !pathIncluded(path, fs.IncludeFilters, true) {
-		return false
-	}
-
-	if len(fs.ExcludeFilters) > 0 && pathIncluded(path, fs.ExcludeFilters, false) {
-		return false
-	}
-
-	if len(fs.GlobalExcludes) > 0 {
-		// Global excludes are applied UNLESS explicitly included
-		if pathIncluded(path, fs.GlobalExcludes, false) && !pathIncluded(path, fs.IncludeFilters, false) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func pathIncluded(path string, globs []string, defaultOnEmpty bool) bool {
-	if len(globs) == 0 {
-		return defaultOnEmpty
-	}
-	// pathspec.Match trims leading ./ from path, but it doesn't trim it from patterns.
-	// So we trim it from patterns ourselves.
-	cleanGlobs := make([]string, len(globs))
-	for i, g := range globs {
-		cleanGlobs[i] = strings.TrimPrefix(g, "./")
-	}
-
-	spec, err := pathspec.FromLines(cleanGlobs...)
-	if err != nil {
-		return false
-	}
-	return spec.Match(path)
-}
-
-func (fs *FilterSet) GetFilesForPatterns(branch string) ([]string, error) {
+// GetFilesForPatterns lists files on a ref that match the filter's path globs.
+// (Was a *FilterSet method; now a free function so the domain FilterSet stays
+// free of git/exec.)
+func GetFilesForPatterns(fs *FilterSet, branch string) ([]string, error) {
 	cmd := exec.Command("git", "ls-tree", "-r", "--name-only", branch)
 	out, err := cmd.Output()
 	if err != nil {
@@ -709,7 +368,7 @@ func (fs *FilterSet) GetFilesForPatterns(branch string) ([]string, error) {
 	return result, nil
 }
 
-func (fs *FilterSet) GetDiff(baseSHA, headSHA string) (string, error) {
+func GetDiff(fs *FilterSet, baseSHA, headSHA string) (string, error) {
 	// Triple-dot (A...B) means diff from common ancestor of A and B to B.
 	// Double-dot (A..B) means diff from A to B.
 	// For PRs we usually want triple-dot.
@@ -741,45 +400,7 @@ func (fs *FilterSet) GetDiff(baseSHA, headSHA string) (string, error) {
 	return string(output), nil
 }
 
-var hunkHeaderRegexp = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
-
-func AnnotateDiff(diff string) (string, []string) {
-	var result strings.Builder
-	var functions []string
-	scanner := bufio.NewScanner(strings.NewReader(diff))
-	currentLine := 0
-	funcRegex := regexp.MustCompile(`(?:func|function|class|def|method|type)\s+([a-zA-Z_][a-zA-Z0-9_]*)`)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "@@ ") {
-			matches := hunkHeaderRegexp.FindStringSubmatch(line)
-			if len(matches) > 1 {
-				startLine, _ := strconv.Atoi(matches[1])
-				currentLine = startLine
-			}
-			result.WriteString(line + "\n")
-		} else if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ ") {
-			result.WriteString(fmt.Sprintf("%d:%s\n", currentLine, line))
-			matches := funcRegex.FindStringSubmatch(line)
-			if len(matches) > 1 {
-				functions = append(functions, matches[1])
-			}
-			currentLine++
-		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- ") {
-			result.WriteString(fmt.Sprintf("%d:%s\n", currentLine, line))
-		} else if strings.HasPrefix(line, " ") {
-			result.WriteString(fmt.Sprintf("%d:%s\n", currentLine, line))
-			currentLine++
-		} else {
-			result.WriteString(line + "\n")
-		}
-	}
-
-	return result.String(), functions
-}
-
-func (fs *FilterSet) GetChangedFiles(baseSHA, headSHA string) ([]string, error) {
+func GetChangedFiles(fs *FilterSet, baseSHA, headSHA string) ([]string, error) {
 	args := []string{"diff", "--name-only", fmt.Sprintf("%s...%s", baseSHA, headSHA)}
 	if len(fs.IncludeFilters) > 0 || len(fs.ExcludeFilters) > 0 {
 		args = append(args, "--")
@@ -797,10 +418,14 @@ func (fs *FilterSet) GetChangedFiles(baseSHA, headSHA string) ([]string, error) 
 		return nil, fmt.Errorf("error running git diff --name-only: %w, output: %s", err, string(output))
 	}
 	files := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(files) == 1 && files[0] == "" {
-		return []string{}, nil
+
+	var result []string
+	for _, f := range files {
+		if f != "" {
+			result = append(result, f)
+		}
 	}
-	return files, nil
+	return result, nil
 }
 
 type PromptBuilder struct {

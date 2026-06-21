@@ -153,12 +153,6 @@ func (c *AnthropicClient) Generate(ctx context.Context, prompt string, maxTokens
 }
 
 func (c *AnthropicClient) GenerateJSON(ctx context.Context, prompt string, maxTokens int) (ModelResult, error) {
-	// Anthropic doesn't have a simple "JSON mode" flag in the same way OpenAI does,
-	// but we can ask for it in the prompt or use tool use.
-	// For now, we'll just append a JSON instruction if it's not already there and use regular Generate.
-	// Actually, newer Anthropic models support structured output via tools, but for simplicity
-	// here we will just rely on the system prompt for now, OR we could implement tool use.
-	// The prompt already asks for JSON.
 	return c.generate(ctx, prompt, maxTokens, true)
 }
 
@@ -181,34 +175,40 @@ func (c *AnthropicClient) generate(ctx context.Context, prompt string, maxTokens
 		params.MaxTokens = 65536
 	}
 
+	usingThinking := false
 	if c.reasoningLevel != "" && c.reasoningLevel != "none" {
 		budget := int64(2048)
 		if params.MaxTokens > 4096 {
 			budget = int64(params.MaxTokens / 2)
 		} else if params.MaxTokens <= 2048 {
-			// Budget must be < max_tokens and >= 1024
-			// If maxTokens is too low, we might need to increase it or skip thinking
 			if params.MaxTokens > 1024 {
 				budget = 1024
 			} else {
-				// Can't enable thinking if max_tokens <= 1024
 				budget = 0
 			}
 		}
 
 		if budget >= 1024 {
 			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
-			// Anthropic requires max_tokens to be GREATER than budget_tokens.
-			// It should be enough to cover thinking + some output.
 			if params.MaxTokens <= budget {
 				params.MaxTokens = budget + 1024
 			}
+			usingThinking = true
 		}
+	}
+
+	// Assistant-prefill JSON enforcement: inject an assistant turn starting with "{"
+	// so the model is forced to continue with valid JSON. Not compatible with
+	// extended thinking (the API rejects prefill + thinking together).
+	if jsonMode && !usingThinking {
+		params.Messages = append(params.Messages,
+			anthropic.NewAssistantMessage(anthropic.NewTextBlock("{")))
 	}
 
 	stream := c.client.Messages.NewStreaming(ctx, params)
 	tokensReasoning := 0
 	text := ""
+	thinkingChars := 0
 	var inputTokens int64
 	var outputTokens int64
 	var stopReason string
@@ -220,8 +220,11 @@ func (c *AnthropicClient) generate(ctx context.Context, prompt string, maxTokens
 			inputTokens = event.Message.Usage.InputTokens
 			outputTokens = event.Message.Usage.OutputTokens
 		case "content_block_delta":
-			if event.Delta.Type == "text_delta" {
+			switch event.Delta.Type {
+			case "text_delta":
 				text += event.Delta.Text
+			case "thinking_delta":
+				thinkingChars += len(event.Delta.Thinking)
 			}
 		case "message_delta":
 			outputTokens = event.Usage.OutputTokens
@@ -231,6 +234,17 @@ func (c *AnthropicClient) generate(ctx context.Context, prompt string, maxTokens
 
 	if err := stream.Err(); err != nil {
 		return ModelResult{}, err
+	}
+
+	// Anthropic includes thinking tokens inside output_tokens; estimate the
+	// split from character count (≈4 chars per token) for observability only.
+	if thinkingChars > 0 {
+		tokensReasoning = thinkingChars / 4
+	}
+
+	// Prepend the prefilled "{" since the stream continues from after it.
+	if jsonMode && !usingThinking {
+		text = "{" + text
 	}
 
 	return ModelResult{

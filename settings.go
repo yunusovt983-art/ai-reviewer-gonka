@@ -269,6 +269,7 @@ type RunConfig struct {
 
 	BalancedClient ModelClient
 	FastestClient  ModelClient
+	ClientPool     *ClientPool
 	OutputHandler  *OutputHandler
 	ActiveProfile  string
 }
@@ -551,11 +552,13 @@ func NewRunConfig(ctx context.Context, s *RunSettings) (*RunConfig, error) {
 		return rc, nil
 	}
 
+	rc.ClientPool = NewClientPool()
+
 	balancedCfg, err := rc.getAggregationModelConfig()
 	if err != nil {
 		return nil, err
 	}
-	rc.BalancedClient, err = GetModelClient(ctx, balancedCfg.Provider, balancedCfg.Model, balancedCfg.ReasoningLevel)
+	rc.BalancedClient, err = rc.ClientPool.Get(ctx, balancedCfg.Provider, balancedCfg.Model, balancedCfg.ReasoningLevel)
 	if err != nil {
 		return nil, fmt.Errorf("error creating balanced client: %w", err)
 	}
@@ -564,7 +567,7 @@ func NewRunConfig(ctx context.Context, s *RunSettings) (*RunConfig, error) {
 	if !ok {
 		fastestCfg = balancedCfg
 	}
-	rc.FastestClient, err = GetModelClient(ctx, fastestCfg.Provider, fastestCfg.Model, fastestCfg.ReasoningLevel)
+	rc.FastestClient, err = rc.ClientPool.Get(ctx, fastestCfg.Provider, fastestCfg.Model, fastestCfg.ReasoningLevel)
 	if err != nil {
 		rc.FastestClient = rc.BalancedClient
 	}

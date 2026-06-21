@@ -373,3 +373,30 @@ func GetModelClient(ctx context.Context, provider, model, reasoningLevel string)
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
 }
+
+// ClientPool caches ModelClient instances by (provider, model, reasoningLevel)
+// so that concurrent persona runs sharing the same model do not each create a
+// separate HTTP/gRPC connection stack.
+type ClientPool struct {
+	mu      sync.Mutex
+	clients map[string]ModelClient
+}
+
+func NewClientPool() *ClientPool {
+	return &ClientPool{clients: make(map[string]ModelClient)}
+}
+
+func (p *ClientPool) Get(ctx context.Context, provider, model, reasoningLevel string) (ModelClient, error) {
+	key := provider + "\x00" + model + "\x00" + reasoningLevel
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c, ok := p.clients[key]; ok {
+		return c, nil
+	}
+	c, err := GetModelClient(ctx, provider, model, reasoningLevel)
+	if err != nil {
+		return nil, err
+	}
+	p.clients[key] = c
+	return c, nil
+}

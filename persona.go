@@ -96,7 +96,7 @@ func (p Persona) Run(ctx context.Context, rc *RunConfig, rr *RunResults, persona
 		return "", ModelResult{}, 0, nil, fmt.Errorf("no model mapping for category %s in profile %s", p.ModelCategory, rc.ActiveProfile)
 	}
 
-	client, err := GetModelClient(ctx, modelCfg.Provider, modelCfg.Model, modelCfg.ReasoningLevel)
+	client, err := rc.ClientPool.Get(ctx, modelCfg.Provider, modelCfg.Model, modelCfg.ReasoningLevel)
 	if err != nil {
 		return "", ModelResult{}, 0, nil, fmt.Errorf("error creating client: %w", err)
 	}

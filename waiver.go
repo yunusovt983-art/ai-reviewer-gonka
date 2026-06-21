@@ -158,7 +158,7 @@ func evaluateWaivers(ctx context.Context, rc *RunConfig, finding Finding, waiver
 		modelCfg = profile[string(Balanced)]
 	}
 
-	client, err := GetModelClient(ctx, modelCfg.Provider, modelCfg.Model, modelCfg.ReasoningLevel)
+	client, err := rc.ClientPool.Get(ctx, modelCfg.Provider, modelCfg.Model, modelCfg.ReasoningLevel)
 	if err != nil {
 		return nil, WaiverEvaluation{}, err
 	}

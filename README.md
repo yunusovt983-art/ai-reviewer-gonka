@@ -15,27 +15,27 @@ See [VISION.md](VISION.md) for the longer rationale and design philosophy.
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════╗
-║                       ai-reviewer  ·  High-Level Design                        ║
+║                       ai-reviewer  ·  High-Level Design                          ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
 
   INPUT                        PIPELINE  (7 stages)                    OUTPUT
   ───────────────              ──────────────────────────────────       ──────────────
-  ┌─────────────┐   gh CLI     ┌──────────────────────────────┐
+  ┌─────────────┐   gh CLI     ┌───────────────────────────────┐
   │  GitHub PR  │─────────────▶│  ① Pre-Explainers            │
   │  commit     │              │     role: explainer, pre      │
   │  file diff  │   git diff   │     GenerateJSON → analysis   │
   │  branches   │─────────────▶│     SHA-cached per file       │
-  └─────────────┘              └──────────────┬───────────────┘
+  └─────────────┘              └──────────────┬────────────────┘
                                               │ analysis injected ↓
-  KNOWLEDGE                    ┌──────────────▼───────────────────────────────────┐
+  KNOWLEDGE                    ┌──────────────▼────────────────────────────────────┐
   ─────────                    │  ② Reviewers                  parallel (≤N)      │
-  ┌──────────┐                 │  ┌────────────┐ ┌────────────┐ ┌────────────┐   │
-  │ Persona  │─── instructions▶│  │  security  │ │    perf    │ │   style    │   │
-  └──────────┘                 │  │  persona   │ │  persona   │ │  persona   │   │
-  ┌──────────┐                 │  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘  │
-  │  Primer  │─── context ────▶│        └──────────────┴──────────────┘         │
-  └──────────┘    (if matched) │                       │ raw text output         │
-                               └───────────────────────┼──────────────────────────┘
+  ┌──────────┐                 │  ┌────────────┐ ┌────────────┐ ┌────────────┐     │
+  │ Persona  │─── instructions▶│  │  security  │ │    perf    │ │   style    │     │
+  └──────────┘                 │  │  persona   │ │  persona   │ │  persona   │     │
+  ┌──────────┐                 │  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘     │
+  │  Primer  │─── context ────▶│        └──────────────┴──────────────┘            │
+  └──────────┘    (if matched) │                       │ raw text output           │
+                               └───────────────────────┼───────────────────────────┘
                                                        │
   FILTERING                    ┌─────────────────────  ▼ ──────────────────────────┐
   ─────────                    │  ③ Normalize           (FastestClient)            │
@@ -45,20 +45,20 @@ See [VISION.md](VISION.md) for the longer rationale and design philosophy.
   │func·regex│                 ┌─────────────────────  ▼ ──────────────────────────┐  ┌───────────┐
   └──────────┘                 │  ④ Waiver Filter       (LLM-judge)               │─▶│  Waived   │
                                │     location filter → LLM confirm → suppress      │  │ Findings  │
-  POLICY                       └───────────────────────┬────────────────────────  ┘  └───────────┘
+  POLICY                       └───────────────────────┬─────────────────────────  ┘  └───────────┘
   ──────                                               │ surviving findings
   ┌──────────┐                 ┌─────────────────────  ▼ ──────────────────────────┐
   │  Waiver  │─── rules ──────▶│  ⑤ Aggregate          (BalancedClient)           │
   └──────────┘                 │     dedup · cluster · assign final severity       │
                                └───────────────────────┬────────────────────────  ┘
                                                        │
-                               ┌─────────────────────  ▼ ──────────────────────────┐
+                               ┌─────────────────────  ▼ ───────────────────────────┐
                                │  ⑥ Post-Explainers    (role: explainer, post)     │
                                │     findings summary injected if include_findings  │
-                               └───────────────────────┬────────────────────────  ┘
+                               └───────────────────────┬────────────────────────────┘
                                                        │
                                ┌─────────────────────  ▼ ──────────────────────────┐
-                               │  ⑦ Report & Artifacts                             │
+                               │  ⑦ Report & Artifacts                            │
                                │     summary.md   ·  report.md   ·  findings.json  │  ◀── stdout
                                │     agent_handoff.md  ·  run-log.jsonl            │
                                └───────────────────────────────────────────────────┘
@@ -67,10 +67,10 @@ See [VISION.md](VISION.md) for the longer rationale and design philosophy.
   ─────────                        ────────────────────────────────────────────────
   ┌──────────────┐  Generate()     ┌────────────────────────────────────────────┐
   │  OpenAI      │◀────────────────│                                            │
-  │  Anthropic   │◀────────────────│  fastest_good  ──▶  normalize · waivers   │
+  │  Anthropic   │◀────────────────│  fastest_good  ──▶  normalize · waivers    │
   │  Gemini      │◀────────────────│  balanced      ──▶  aggregate              │
-  └──────────────┘                 │  best_code     ──▶  deep review personas  │
-    ClientPool                     │  frontier_best ──▶  most critical checks  │
+  └──────────────┘                 │  best_code     ──▶  deep review personas   │
+    ClientPool                     │  frontier_best ──▶  most critical checks   │
     (cached by                     │                                            │
     model+level)                   │  profile: gemini_std | openai | anthropic  │
                                    └────────────────────────────────────────────┘

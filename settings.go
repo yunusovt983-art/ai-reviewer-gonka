@@ -243,6 +243,17 @@ type RunSettings struct {
 	PlannedConcepts  []string
 }
 
+// RunPlan is the result of persona planning: which persona runs to execute or skip.
+// It is computed by planRuns and stored into RunConfig by NewRunConfig.
+type RunPlan struct {
+	PreRunToRun     []PersonaRun
+	PreRunToSkip    []PersonaRun
+	ReviewersToRun  []PersonaRun
+	ReviewersToSkip []PersonaRun
+	PostRunToRun    []PersonaRun
+	PostRunToSkip   []PersonaRun
+}
+
 type RunConfig struct {
 	Settings      *RunSettings
 	Config        *Config
@@ -254,12 +265,7 @@ type RunConfig struct {
 	RunDir        string
 	SearchPaths   []string
 
-	PreRunToRun     []PersonaRun
-	PreRunToSkip    []PersonaRun
-	ReviewersToRun  []PersonaRun
-	ReviewersToSkip []PersonaRun
-	PostRunToRun    []PersonaRun
-	PostRunToSkip   []PersonaRun
+	RunPlan
 
 	BalancedClient ModelClient
 	FastestClient  ModelClient
@@ -530,8 +536,15 @@ func NewRunConfig(ctx context.Context, s *RunSettings) (*RunConfig, error) {
 		rc.OutputHandler.Printf("--- Run directory: %s\n", rc.RunDir)
 	}
 
-	// 6. Filter personas
-	rc.filterPersonas()
+	// 6. Plan persona runs (pure: no I/O beyond warning prints)
+	rc.OutputHandler.Println("--- Filtering personas...")
+	rc.RunPlan = planRuns(
+		rc.Personas, rc.PRInfo, rc.GlobalContext,
+		rc.Config.GlobalExcludes,
+		s.IncludePersonas, s.ExcludePersonas, s.ExcludePostExplainers,
+		rc.OutputHandler,
+	)
+	rc.printRunPlan()
 
 	// 7. Initialize common clients
 	if s.DryRun {
@@ -590,13 +603,24 @@ func (rc *RunConfig) getModelInfo(p Persona) string {
 	return res
 }
 
-func (rc *RunConfig) filterPersonas() {
-	rc.OutputHandler.Println("--- Filtering personas...")
-	for _, p := range rc.Personas {
-		// CLI: Include filter
-		if len(rc.Settings.IncludePersonas) > 0 {
+// planRuns decides which persona runs to execute or skip based on file-match
+// filters and CLI include/exclude flags. It has no I/O side effects: all
+// logging is done by the caller via printRunPlan.
+func planRuns(
+	personas []Persona,
+	prInfo *PRInfo,
+	globalCtx *PRContext,
+	globalExcludes []string,
+	includePersonas []string,
+	excludePersonas []string,
+	excludePostExplainers bool,
+	oh *OutputHandler,
+) RunPlan {
+	var plan RunPlan
+	for _, p := range personas {
+		if len(includePersonas) > 0 {
 			found := false
-			for _, id := range rc.Settings.IncludePersonas {
+			for _, id := range includePersonas {
 				if id == p.ID {
 					found = true
 					break
@@ -608,30 +632,30 @@ func (rc *RunConfig) filterPersonas() {
 		}
 
 		fs := p.Filters
-		fs.GlobalExcludes = rc.Config.GlobalExcludes
-		if len(fs.IncludeFilters) == 0 && rc.PRInfo.BaseRefOid == rc.PRInfo.HeadRefOid && !rc.PRInfo.IsCommit {
-			fs.IncludeFilters = rc.PRInfo.FilePatterns
+		fs.GlobalExcludes = globalExcludes
+		if len(fs.IncludeFilters) == 0 && prInfo.BaseRefOid == prInfo.HeadRefOid && !prInfo.IsCommit {
+			fs.IncludeFilters = prInfo.FilePatterns
 		}
 
 		var personaContext *PRContext
-		if len(fs.IncludeFilters) > 0 || len(fs.ExcludeFilters) > 0 || len(fs.RawRegexFilters) > 0 || (rc.PRInfo.BaseRefOid == rc.PRInfo.HeadRefOid && !rc.PRInfo.IsCommit && rc.PRInfo.BaseRefOid != "") ||
+		if len(fs.IncludeFilters) > 0 || len(fs.ExcludeFilters) > 0 || len(fs.RawRegexFilters) > 0 ||
+			(prInfo.BaseRefOid == prInfo.HeadRefOid && !prInfo.IsCommit && prInfo.BaseRefOid != "") ||
 			len(fs.BranchFilters) > 0 || len(fs.FunctionFilters) > 0 || fs.DateFilter != "" {
 			var err error
-			personaContext, err = GetPRContext(rc.PRInfo, &fs)
+			personaContext, err = GetPRContext(prInfo, &fs)
 			if err != nil {
-				rc.OutputHandler.Printf("    Warning: error filtering context for persona %s: %v\n", p.ColoredID, err)
+				oh.Printf("    Warning: error filtering context for persona %s: %v\n", p.ColoredID, err)
 				continue
 			}
 		} else {
-			personaContext = rc.GlobalContext
+			personaContext = globalCtx
 		}
 
 		run := PersonaRun{Persona: p, Context: personaContext}
 		skip := true
 		for _, f := range personaContext.Files {
-			// Pre-compile regexes for efficiency
 			if err := fs.Compile(); err != nil {
-				rc.OutputHandler.Printf("    Warning: error compiling filters for persona %s: %v\n", p.ColoredID, err)
+				oh.Printf("    Warning: error compiling filters for persona %s: %v\n", p.ColoredID, err)
 				break
 			}
 			if f.Matches(FileMatchOptions{
@@ -644,65 +668,66 @@ func (rc *RunConfig) filterPersonas() {
 			}
 		}
 
-		// CLI: Exclude filters
 		if !skip {
-			for _, id := range rc.Settings.ExcludePersonas {
+			for _, id := range excludePersonas {
 				if id == p.ID {
 					skip = true
 					break
 				}
 			}
-			if !skip && rc.Settings.ExcludePostExplainers && p.Role == "explainer" && p.Stage == "post" {
+			if !skip && excludePostExplainers && p.Role == "explainer" && p.Stage == "post" {
 				skip = true
 			}
 		}
 
-		if p.Role == "explainer" {
-			if p.Stage == "pre" {
-				if skip {
-					rc.PreRunToSkip = append(rc.PreRunToSkip, run)
-				} else {
-					rc.PreRunToRun = append(rc.PreRunToRun, run)
-				}
-			} else {
-				if skip {
-					rc.PostRunToSkip = append(rc.PostRunToSkip, run)
-				} else {
-					rc.PostRunToRun = append(rc.PostRunToRun, run)
-				}
-			}
-		} else {
+		switch {
+		case p.Role == "explainer" && p.Stage == "pre":
 			if skip {
-				rc.ReviewersToSkip = append(rc.ReviewersToSkip, run)
+				plan.PreRunToSkip = append(plan.PreRunToSkip, run)
 			} else {
-				rc.ReviewersToRun = append(rc.ReviewersToRun, run)
+				plan.PreRunToRun = append(plan.PreRunToRun, run)
+			}
+		case p.Role == "explainer":
+			if skip {
+				plan.PostRunToSkip = append(plan.PostRunToSkip, run)
+			} else {
+				plan.PostRunToRun = append(plan.PostRunToRun, run)
+			}
+		default:
+			if skip {
+				plan.ReviewersToSkip = append(plan.ReviewersToSkip, run)
+			} else {
+				plan.ReviewersToRun = append(plan.ReviewersToRun, run)
 			}
 		}
 	}
+	return plan
+}
 
+func (rc *RunConfig) printRunPlan() {
 	rc.OutputHandler.Println("    To be run:")
-	for _, r := range rc.PreRunToRun {
+	for _, r := range rc.RunPlan.PreRunToRun {
 		rc.OutputHandler.Printf("      - %s (explainer, pre) [%s]\n", r.Persona.ColoredID, rc.getModelInfo(r.Persona))
 		rc.printMatchedPrimers(r.Context)
 	}
-	for _, r := range rc.ReviewersToRun {
+	for _, r := range rc.RunPlan.ReviewersToRun {
 		rc.OutputHandler.Printf("      - %s (reviewer) [%s]\n", r.Persona.ColoredID, rc.getModelInfo(r.Persona))
 		rc.printMatchedPrimers(r.Context)
 	}
-	for _, r := range rc.PostRunToRun {
+	for _, r := range rc.RunPlan.PostRunToRun {
 		rc.OutputHandler.Printf("      - %s (explainer, post) [%s]\n", r.Persona.ColoredID, rc.getModelInfo(r.Persona))
 		rc.printMatchedPrimers(r.Context)
 	}
 
-	if len(rc.PreRunToSkip) > 0 || len(rc.ReviewersToSkip) > 0 || len(rc.PostRunToSkip) > 0 {
+	if len(rc.RunPlan.PreRunToSkip) > 0 || len(rc.RunPlan.ReviewersToSkip) > 0 || len(rc.RunPlan.PostRunToSkip) > 0 {
 		rc.OutputHandler.Println("    To be skipped:")
-		for _, r := range rc.PreRunToSkip {
+		for _, r := range rc.RunPlan.PreRunToSkip {
 			rc.OutputHandler.Printf("      - %s [%s]\n", r.Persona.ColoredID, rc.getModelInfo(r.Persona))
 		}
-		for _, r := range rc.ReviewersToSkip {
+		for _, r := range rc.RunPlan.ReviewersToSkip {
 			rc.OutputHandler.Printf("      - %s [%s]\n", r.Persona.ColoredID, rc.getModelInfo(r.Persona))
 		}
-		for _, r := range rc.PostRunToSkip {
+		for _, r := range rc.RunPlan.PostRunToSkip {
 			rc.OutputHandler.Printf("      - %s [%s]\n", r.Persona.ColoredID, rc.getModelInfo(r.Persona))
 		}
 	}

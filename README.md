@@ -42,10 +42,10 @@ See [VISION.md](VISION.md) for the longer rationale and design philosophy.
   ┌──────────┐                 │     raw text ──▶ []Finding{file·line·severity}    │
   │FilterSet │─── prune files  └───────────────────────┬────────────────────────  ┘
   │path·date │    per-persona                           │
-  │func·regex│                 ┌─────────────────────  ▼ ──────────────────────────┐  ┌───────────┐
-  └──────────┘                 │  ④ Waiver Filter       (LLM-judge)               │─▶│  Waived   │
-                               │     location filter → LLM confirm → suppress      │  │ Findings  │
-  POLICY                       └───────────────────────┬─────────────────────────  ┘  └───────────┘
+  │func·regex│                 ┌─────────────────────  ▼ ───────────────────────┐  ┌───────────┐
+  └──────────┘                 │  ④ Waiver Filter       (LLM-judge)            │─▶│  Waived   │
+                               │     location filter → LLM confirm → suppress   │  │ Findings  │
+  POLICY                       └───────────────────────┬────────────────────────┘  └───────────┘
   ──────                                               │ surviving findings
   ┌──────────┐                 ┌─────────────────────  ▼ ──────────────────────────┐
   │  Waiver  │─── rules ──────▶│  ⑤ Aggregate          (BalancedClient)           │

@@ -37,10 +37,10 @@ See [VISION.md](VISION.md) for the longer rationale and design philosophy.
   └──────────┘    (if matched) │                       │ raw text output           │
                                └───────────────────────┼───────────────────────────┘
                                                        │
-  FILTERING                    ┌─────────────────────  ▼ ──────────────────────────┐
-  ─────────                    │  ③ Normalize           (FastestClient)            │
-  ┌──────────┐                 │     raw text ──▶ []Finding{file·line·severity}    │
-  │FilterSet │─── prune files  └───────────────────────┬────────────────────────  ┘
+  FILTERING                    ┌─────────────────────  ▼ ────────────────────────┐
+  ─────────                    │  ③ Normalize           (FastestClient)         │
+  ┌──────────┐                 │     raw text ──▶ []Finding{file·line·severity}  │
+  │FilterSet │─── prune files  └───────────────────────┬─────────────────────────┘
   │path·date │    per-persona                           │
   │func·regex│                 ┌─────────────────────  ▼ ───────────────────────┐  ┌───────────┐
   └──────────┘                 │  ④ Waiver Filter       (LLM-judge)            │─▶│  Waived   │

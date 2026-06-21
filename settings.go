@@ -58,6 +58,12 @@ func NewRunResults() *RunResults {
 	}
 }
 
+// Cost returns the estimated USD cost for this log entry using per-million-token prices.
+// Output billing includes reasoning tokens (Anthropic includes them in output_tokens).
+func (e RunLogEntry) Cost() float64 {
+	return (float64(e.TokensIn)*e.InputPrice + float64(e.TokensOut+e.TokensReasoning)*e.OutputPrice) / 1_000_000
+}
+
 func (rr *RunResults) AddStat(entry RunLogEntry) {
 	rr.statsMu.Lock()
 	defer rr.statsMu.Unlock()
@@ -135,9 +141,7 @@ func (rr *RunResults) GetStatsString() string {
 		totalTokensIn += entry.TokensIn
 		totalTokensOut += entry.TokensOut
 		totalTokensReasoning += entry.TokensReasoning
-		cost := (float64(entry.TokensIn) * entry.InputPrice / 1000000.0) +
-			(float64(entry.TokensOut+entry.TokensReasoning) * entry.OutputPrice / 1000000.0)
-		totalCost += cost
+		totalCost += entry.Cost()
 	}
 
 	sb.WriteString(fmt.Sprintf("tokens_in=%d\n", totalTokensIn))

@@ -338,8 +338,7 @@ func generateReport(prNumber, commitHash, baseSHA, headSHA string, rr *RunResult
 	modelStats := make(map[string]mStats)
 
 	for _, s := range rr.Stats {
-		cost := (float64(s.TokensIn) * s.InputPrice / 1000000.0) +
-			(float64(s.TokensOut+s.TokensReasoning) * s.OutputPrice / 1000000.0)
+		cost := s.Cost()
 
 		warning := ""
 		if s.FinishReason != "" && s.FinishReason != "STOP" && s.FinishReason != "stop" && s.FinishReason != "end_turn" && s.FinishReason != "FinishReasonStop" {

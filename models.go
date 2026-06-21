@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"ai-reviewer/internal/domain/review"
+
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/sashabaranov/go-openai"
@@ -43,20 +45,10 @@ func getEnv(key string) string {
 	return os.Getenv(key)
 }
 
-type ModelClient interface {
-	Generate(ctx context.Context, prompt string, maxTokens int) (ModelResult, error)
-	GenerateJSON(ctx context.Context, prompt string, maxTokens int) (ModelResult, error)
-}
-
-type ModelResult struct {
-	Text            string
-	TokensIn        int
-	TokensOut       int
-	TokensReasoning int
-	Provider        string
-	Model           string
-	FinishReason    string
-}
+// ModelClient and ModelResult are owned by internal/domain/review; aliased here
+// so existing code in package main compiles without qualification.
+type ModelClient = review.ModelClient
+type ModelResult = review.ModelResult
 
 type ModelCategory string
 

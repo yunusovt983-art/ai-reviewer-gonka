@@ -1,195 +1,197 @@
 # AI Reviewer
 
-A single-binary Go CLI that reviews a GitHub PR using AI personas.
+Одиночный Go-бинарник для ревью GitHub PR с помощью AI-персон.
 
-## The Vision
-AI code review is becoming essential, especially as more code is itself AI-generated. `ai-reviewer` is built on the idea that good review is not one prompt, but an orchestration problem: multiple specialized reviewers, project-specific context, and clear policy working together to produce high-signal, cost-conscious feedback.
+## Концепция
 
-- Specialized personas instead of one generic reviewer
-- Repo-aware primers and waivers instead of ambient global behavior
-- Structured findings and auditable artifacts instead of opaque output
+ИИ-ревью кода становится необходимостью, особенно когда сам код всё чаще пишется с помощью ИИ. `ai-reviewer` построен на идее, что качественное ревью — это не один промпт, а задача оркестрации: несколько специализированных ревьюеров, контекст конкретного репозитория и чёткая политика работают вместе, чтобы давать сигнальную, экономичную обратную связь.
 
-See [VISION.md](VISION.md) for the longer rationale and design philosophy.
+- Специализированные персоны вместо одного универсального ревьюера
+- Праймеры и вейверы, привязанные к репозиторию, вместо глобального поведения
+- Структурированные находки и артефакты вместо непрозрачного вывода
 
-## Architecture
+Подробнее о мотивации и философии дизайна — в [VISION.md](VISION.md).
+
+## Архитектура
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════╗
-║                       ai-reviewer  ·  High-Level Design                          ║
+║                       ai-reviewer  ·  Архитектура верхнего уровня              ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
 
-  INPUT                        PIPELINE  (7 stages)                    OUTPUT
+  ВХОД                         КОНВЕЙЕР  (7 стадий)                    ВЫХОД
   ───────────────              ──────────────────────────────────       ──────────────
   ┌─────────────┐   gh CLI     ┌───────────────────────────────┐
-  │  GitHub PR  │─────────────▶│  ① Pre-Explainers            │
-  │  commit     │              │     role: explainer, pre      │
-  │  file diff  │   git diff   │     GenerateJSON → analysis   │
-  │  branches   │─────────────▶│     SHA-cached per file       │
+  │  GitHub PR  │─────────────▶│  ① Пре-объяснители           │
+  │  коммит     │              │     role: explainer, pre      │
+  │  файл/диф   │   git diff   │     GenerateJSON → анализ     │
+  │  ветки      │─────────────▶│     SHA-кэш на файл           │
   └─────────────┘              └──────────────┬────────────────┘
-                                              │ analysis injected ↓
-  KNOWLEDGE                    ┌──────────────▼────────────────────────────────────┐
-  ─────────                    │  ② Reviewers                  parallel (≤N)      │
+                                              │ анализ инжектируется ↓
+  ЗНАНИЯ                       ┌──────────────▼────────────────────────────────────┐
+  ───────                      │  ② Ревьюеры                   параллельно (≤N)   │
   ┌──────────┐                 │  ┌────────────┐ ┌────────────┐ ┌────────────┐     │
-  │ Persona  │─── instructions▶│  │  security  │ │    perf    │ │   style    │     │
-  └──────────┘                 │  │  persona   │ │  persona   │ │  persona   │     │
+  │ Персона  │─── инструкции──▶│  │ безопасн.  │ │  произв.   │ │   стиль    │     │
+  └──────────┘                 │  │  персона   │ │  персона   │ │  персона   │     │
   ┌──────────┐                 │  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘     │
-  │  Primer  │─── context ────▶│        └──────────────┴──────────────┘            │
-  └──────────┘    (if matched) │                       │ raw text output           │
+  │  Праймер │─── контекст ───▶│        └──────────────┴──────────────┘            │
+  └──────────┘    (при совпад) │                       │ сырой текст               │
                                └───────────────────────┼───────────────────────────┘
                                                        │
-  FILTERING                    ┌─────────────────────  ▼ ────────────────────────┐
-  ─────────                    │  ③ Normalize           (FastestClient)         │
-  ┌──────────┐                 │     raw text ──▶ []Finding{file·line·severity}  │
-  │FilterSet │─── prune files  └───────────────────────┬─────────────────────────┘
-  │path·date │    per-persona                           │
-  │func·regex│                 ┌─────────────────────  ▼ ───────────────────────┐  ┌───────────┐
-  └──────────┘                 │  ④ Waiver Filter       (LLM-judge)            │─▶│  Waived   │
-                               │     location filter → LLM confirm → suppress   │  │ Findings  │
-  POLICY                       └───────────────────────┬────────────────────────┘  └───────────┘
-  ──────                                               │ surviving findings
+  ФИЛЬТРАЦИЯ                   ┌─────────────────────  ▼ ────────────────────────┐
+  ──────────                   │  ③ Нормализация        (FastestClient)          │
+  ┌──────────┐                 │     сырой текст ──▶ []Finding{файл·строка·важн} │
+  │FilterSet │─── отсев файлов └───────────────────────┬─────────────────────────┘
+  │путь·дата │    на персону                            │
+  │функц·regex│                ┌─────────────────────  ▼ ───────────────────────┐  ┌───────────┐
+  └──────────┘                 │  ④ Фильтр вейверов     (LLM-судья)            │─▶│  Waived   │
+                               │     фильтр по локации → LLM подтверждает       │  │ Findings  │
+  ПОЛИТИКА                     └───────────────────────┬────────────────────────┘  └───────────┘
+  ────────                                             │ выжившие находки
   ┌──────────┐                 ┌─────────────────────  ▼ ──────────────────────────┐
-  │  Waiver  │─── rules ──────▶│  ⑤ Aggregate          (BalancedClient)           │
-  └──────────┘                 │     dedup · cluster · assign final severity       │
+  │  Вейвер  │─── правила ────▶│  ⑤ Агрегация          (BalancedClient)           │
+  └──────────┘                 │     дедупликация · кластеризация · важность       │
                                └───────────────────────┬────────────────────────  ┘
                                                        │
                                ┌─────────────────────  ▼ ───────────────────────────┐
-                               │  ⑥ Post-Explainers    (role: explainer, post)     │
-                               │     findings summary injected if include_findings  │
+                               │  ⑥ Пост-объяснители   (role: explainer, post)     │
+                               │     сводка находок инжектируется если include_fin  │
                                └───────────────────────┬────────────────────────────┘
                                                        │
                                ┌─────────────────────  ▼ ──────────────────────────┐
-                               │  ⑦ Report & Artifacts                            │
+                               │  ⑦ Отчёт и артефакты                             │
                                │     summary.md   ·  report.md   ·  findings.json  │  ◀── stdout
                                │     agent_handoff.md  ·  run-log.jsonl            │
                                └───────────────────────────────────────────────────┘
 
-  PROVIDERS                        MODEL CATEGORIES (late binding)
-  ─────────                        ────────────────────────────────────────────────
+  ПРОВАЙДЕРЫ                       КАТЕГОРИИ МОДЕЛЕЙ (позднее связывание)
+  ──────────                       ────────────────────────────────────────────────
   ┌──────────────┐  Generate()     ┌────────────────────────────────────────────┐
   │  OpenAI      │◀────────────────│                                            │
-  │  Anthropic   │◀────────────────│  fastest_good  ──▶  normalize · waivers    │
-  │  Gemini      │◀────────────────│  balanced      ──▶  aggregate              │
-  └──────────────┘                 │  best_code     ──▶  deep review personas   │
-    ClientPool                     │  frontier_best ──▶  most critical checks   │
-    (cached by                     │                                            │
-    model+level)                   │  profile: gemini_std | openai | anthropic  │
+  │  Anthropic   │◀────────────────│  fastest_good  ──▶  нормализация · вейверы │
+  │  Gemini      │◀────────────────│  balanced      ──▶  агрегация              │
+  └──────────────┘                 │  best_code     ──▶  глубокое ревью         │
+    ClientPool                     │  frontier_best ──▶  критически важные      │
+    (кэш по                        │                                            │
+    модели+уровню)                 │  профиль: gemini_std | openai | anthropic  │
                                    └────────────────────────────────────────────┘
 ```
 
-
+## Использование
 
 ```bash
 go build -o ai-review
-# Review a PR
-./ai-review pr <repo_owner>/<repo_name> <pr_number> [options]
+# Ревью PR
+./ai-review pr <владелец>/<репозиторий> <номер_pr> [опции]
 
-# Review a specific commit (compared to its parent by default)
-./ai-review commit <repo_owner>/<repo_name> <commit_hash> [--compare-to <hash>] [options]
+# Ревью конкретного коммита (по умолчанию сравнивается с родительским)
+./ai-review commit <владелец>/<репозиторий> <хэш_коммита> [--compare-to <хэш>] [опции]
 
-# Review specific files on a branch
-./ai-review file <repo_owner>/<repo_name> <branch_name> <file_pattern...> [options]
+# Ревью конкретных файлов на ветке
+./ai-review file <владелец>/<репозиторий> <ветка> <шаблон_файлов...> [опции]
 
-# Review the diff between two branches
-./ai-review branches <repo_owner>/<repo_name> <base_branch> <head_branch> [options]
+# Ревью диффа между двумя ветками
+./ai-review branches <владелец>/<репозиторий> <базовая_ветка> <целевая_ветка> [опции]
 
-# Get raw matching primers for planned changes (deterministic, no AI calls)
-./ai-review context primers <repo_owner>/<repo_name> [--files <f>] [--functions <fn>] [--concepts <c>] [--format <fmt>]
+# Получить подходящие праймеры для запланированных изменений (детерминировано, без AI-вызовов)
+./ai-review context primers <владелец>/<репозиторий> [--files <f>] [--functions <fn>] [--concepts <c>] [--format <fmt>]
 
-# Discover available authoring concepts (deterministic, no AI calls)
-./ai-review concepts <repo_owner>/<repo_name> [--files <f>] [--functions <fn>] [--format <fmt>]
+# Получить доступные авторские концепции (детерминировано, без AI-вызовов)
+./ai-review concepts <владелец>/<репозиторий> [--files <f>] [--functions <fn>] [--format <fmt>]
 ```
 
-### Primers and Concepts
+### Праймеры и концепции
 
-Primers are project-specific instructions that help AI reviewers understand your codebase's conventions, architecture, and constraints. They can declare `authoring_concepts` in their frontmatter.
+Праймеры — это проектно-специфичные инструкции, которые помогают AI-ревьюерам понять соглашения, архитектуру и ограничения кодовой базы. В их frontmatter можно объявлять `authoring_concepts`.
 
-Coding agents can use the `concepts` command to discover the shared vocabulary of a repository before deciding which context to load:
+Coding-агенты могут использовать команду `concepts`, чтобы узнать общий словарь репозитория перед загрузкой контекста:
 
-1.  Call `ai-review concepts <repo>` to see available concepts.
-2.  Filter them by providing `--files` or `--functions` if needed.
-3.  Choose relevant concepts and load full primer context using `ai-review context primers --concepts <concepts>`.
+1. Вызвать `ai-review concepts <репо>` — получить список доступных концепций.
+2. При необходимости отфильтровать через `--files` или `--functions`.
+3. Выбрать нужные концепции и загрузить полный контекст праймеров: `ai-review context primers --concepts <концепции>`.
 
-### Global CLI Options
+### Глобальные опции CLI
 
-- `--model-profile <name>`: Use a specific model profile from `config.yaml`.
-- `--max-tokens <n>`: Override the maximum tokens for AI responses.
-- `--concurrency <n>`: Set the maximum number of personas to run concurrently (default: 5).
-- `--dry-run`: Scan and report what personas and primers will be applied, but do not execute any AI calls. Useful for testing configuration and filtering logic without incurring costs.
-- `--context-eval`: Perform a detailed evaluation of the context window size for each persona. This runs pre-run explainers, calculates accurate token counts using `tiktoken`, and reports a breakdown of context components (persona instructions, primers, diffs, etc.) without executing the actual review personas.
-- `--context-eval-csv <file>`: In addition to the console report, output the context evaluation data to a CSV file. This is designed for TreeMap visualizations, with a hierarchical `path` column (e.g., `"persona,category,subcategory"`).
-- `--include-personas <ids>`: Only run these specific personas (comma-separated list of IDs).
-- `--exclude-personas <ids>`: Exclude these specific personas (comma-separated list of IDs).
-- `--exclude-post-explainers`: Exclude all post-run explainers. Useful if you only want the review findings without high-level context or guides.
-- `--prompt-only`: Runs all pre-run explainers fully, then generates and saves the prompts for all reviewers and post-run explainers without executing them. This is useful for manual review of AI prompts or for feeding them into a different tool. Any dependencies (like the summary of findings) are automatically omitted from the prompts in this mode.
+- `--model-profile <name>`: Использовать конкретный профиль модели из `config.yaml`.
+- `--max-tokens <n>`: Переопределить максимальное число токенов для ответов AI.
+- `--concurrency <n>`: Максимальное число одновременно выполняемых персон (по умолчанию: 5).
+- `--dry-run`: Показать, какие персоны и праймеры будут применены, без фактических AI-вызовов. Полезно для тестирования конфигурации без затрат.
+- `--context-eval`: Детальная оценка размера контекстного окна для каждой персоны. Запускает пре-объяснители, считает токены через `tiktoken` и выводит разбивку компонентов контекста без запуска ревьюеров.
+- `--context-eval-csv <файл>`: Дополнительно сохранить данные оценки контекста в CSV для TreeMap-визуализаций. Колонка `path` иерархическая (например, `"персона,категория,подкатегория"`).
+- `--include-personas <ids>`: Запустить только указанные персоны (через запятую).
+- `--exclude-personas <ids>`: Исключить указанные персоны (через запятую).
+- `--exclude-post-explainers`: Исключить все пост-объяснители. Полезно, если нужны только находки без высокоуровневого контекста.
+- `--prompt-only`: Полностью запускает пре-объяснители, затем генерирует и сохраняет промпты для ревьюеров и пост-объяснителей без их выполнения. Зависимости (например, сводка находок) автоматически исключаются из промптов.
 
-### Examples:
+### Примеры
+
 ```bash
-# Review PR #1234
+# Ревью PR #1234
 ./ai-review pr google/go-github 1234 --max-tokens 500
 
-# Review commit abc1234
+# Ревью коммита abc1234
 ./ai-review commit google/go-github abc1234
 
-# Review commit abc1234 compared to def5678
+# Ревью коммита abc1234 относительно def5678
 ./ai-review commit google/go-github abc1234 --compare-to def5678
 
-# Review all .go files in config directory on master branch
+# Ревью всех .go файлов в директории config на ветке master
 ./ai-review file google/go-github master "config/*.go"
 
-# Review comparison between master and feature branches
+# Ревью разницы между ветками master и feature
 ./ai-review branches google/go-github master feature
 
-# Dry run to see what would be executed for PR #1234
+# Dry-run: что будет запущено для PR #1234
 ./ai-review pr google/go-github 1234 --dry-run
 
-# Evaluate context window sizes for PR #1234
+# Оценка размеров контекстного окна для PR #1234
 ./ai-review pr google/go-github 1234 --context-eval
 
-# Export context evaluation to CSV for visualization
+# Экспорт оценки контекста в CSV для визуализации
 ./ai-review pr google/go-github 1234 --context-eval --context-eval-csv evaluation.csv
 
-# Only run specific reviewers
+# Запустить только конкретных ревьюеров
 ./ai-review pr google/go-github 1234 --include-personas security,style
 
-# Exclude specific reviewers and all post-run explainers
+# Исключить конкретных ревьюеров и все пост-объяснители
 ./ai-review pr google/go-github 1234 --exclude-personas logging --exclude-post-explainers
 
-# Get primers for planned changes to specific files and functions
+# Получить праймеры для планируемых изменений конкретных файлов и функций
 ./ai-review context primers google/go-github --files "src/auth.go" --functions "Login"
 
-# Get primers matching specific authoring concepts in JSON format
+# Получить праймеры по авторским концепциям в формате JSON
 ./ai-review context primers google/go-github --concepts "security,auth" --format json
 
-# Discover all available authoring concepts for a repo
+# Все доступные авторские концепции репозитория
 ./ai-review concepts google/go-github
 
-# Discover concepts relevant to specific files
+# Концепции, относящиеся к конкретным файлам
 ./ai-review concepts google/go-github --files "src/auth.go" --format names
 ```
 
-## Setup
+## Установка
 
-1. Install Go 1.25+
-2. Install GitHub CLI (`gh`) and authenticate: `gh auth login`
-3. Install Git
-4. Set up credentials for the AI providers you actually use in `config.yaml`:
-   - `OPENAI_API_KEY` for `provider: openai`
-   - `ANTHROPIC_API_KEY` for `provider: anthropic`
-   - `GEMINI_API_KEY` for `provider: gemini`
+1. Установить Go 1.25+
+2. Установить GitHub CLI (`gh`) и авторизоваться: `gh auth login`
+3. Установить Git
+4. Настроить учётные данные для используемых AI-провайдеров в `config.yaml`:
+   - `OPENAI_API_KEY` для `provider: openai`
+   - `ANTHROPIC_API_KEY` для `provider: anthropic`
+   - `GEMINI_API_KEY` для `provider: gemini`
 
-You do not need to set all three unless your configuration uses all three.
+Все три ключа нужны только если конфигурация использует все три провайдера.
 
-## Configuration
+## Конфигурация
 
-The tool expects repository-specific configuration under `.ai-review/<repo_owner>/<repo_name>/`. The main config file lives at `.ai-review/<repo_owner>/<repo_name>/config.yaml`, and local personas, primers, and waivers also live under that repo-scoped directory tree.
+Инструмент ожидает конфигурацию репозитория в `.ai-review/<владелец>/<репозиторий>/`. Основной файл — `.ai-review/<владелец>/<репозиторий>/config.yaml`. Там же хранятся персоны, праймеры и вейверы.
 
-### Model Selection
+### Выбор модели
 
-Model selection is handled through **Definitions** and **Profiles**. This allows you to define models once and reuse them across different tiers (e.g., "cheap", "balanced", "best_code") and switch between entirely different providers (e.g., Gemini vs OpenAI) using a single flag.
+Выбор модели реализован через **Определения** и **Профили**. Это позволяет определить модели один раз, переиспользовать их в разных тирах (`cheap`, `balanced`, `best_code`) и переключаться между провайдерами одним флагом.
 
-#### 1. Model Definitions
+#### 1. Определения моделей
 
-Model definitions describe the underlying LLM, its provider, and its pricing. You can define these in `config.yaml` or in a standalone `models.yaml` file for reuse across multiple repositories.
+Описывают конкретную LLM, провайдера и стоимость. Задаются в `config.yaml` или в отдельном `models.yaml` для переиспользования между репозиториями.
 
 ```yaml
 model_definitions:
@@ -207,9 +209,9 @@ model_definitions:
     output_price_per_million: 0.40
 ```
 
-#### 2. Model Profiles
+#### 2. Профили моделей
 
-Profiles map abstract categories used by personas (like `cheap`, `balanced`, `best_code`) to specific model definitions. You can also override any definition field (like `reasoning_level`) at the profile level.
+Профили связывают абстрактные категории персон (`cheap`, `balanced`, `best_code`) с конкретными определениями моделей. На уровне профиля можно переопределить любое поле (например, `reasoning_level`).
 
 ```yaml
 default_profile: gemini_standard
@@ -235,37 +237,37 @@ model_profiles:
 
 #### 3. models.yaml
 
-To avoid repeating model definitions in every repository's `config.yaml`, you can create a `models.yaml` file. The tool searches for `models.yaml` in:
-1. `.ai-review/` or `.ai-reviewer/` relative to any search path.
-2. The same directory as your active `config.yaml`.
+Чтобы не повторять определения моделей в каждом `config.yaml`, создайте файл `models.yaml`. Инструмент ищет его в:
+1. `.ai-review/` или `.ai-reviewer/` относительно любого пути поиска.
+2. В директории активного `config.yaml`.
 
-Definitions in `models.yaml` are merged with those in `config.yaml`.
+Определения из `models.yaml` сливаются с `config.yaml`.
 
-### Discovery and Organization
+### Обнаружение и организация
 
-The tool scans for personas, primers, and waivers in two locations:
+Инструмент сканирует персоны, праймеры и вейверы в двух местах:
 
-- **Repository branch scanning**: The tool scans all `.md` files in the repository branch being evaluated. A file is included as a persona, primer, or waiver if it contains an explicit `ai_review: persona`, `ai_review: primer`, or `ai_review: waiver` field in its YAML frontmatter. This allows you to keep committed artifacts alongside the code they relate to.
-- **Repo-scoped local directories**: Any `.md` file within `.ai-review/<owner>/<repo>/personas/`, `.ai-review/<owner>/<repo>/primers/`, or `.ai-review/<owner>/<repo>/waivers/` is automatically loaded from the local checkout of this tool. All subdirectories are searched recursively. Files in these directories do **not** require an `ai_review` field in their frontmatter.
+- **Сканирование ветки репозитория**: все `.md`-файлы в ветке. Файл включается как персона, праймер или вейвер если содержит поле `ai_review: persona`, `ai_review: primer` или `ai_review: waiver` в YAML frontmatter. Это позволяет хранить артефакты рядом с кодом.
+- **Локальные директории репозитория**: любой `.md`-файл в `.ai-review/<владелец>/<репо>/personas/`, `/primers/` или `/waivers/` загружается автоматически. Поле `ai_review` в frontmatter не требуется.
 
-The local checkout is repo-scoped only. The tool does not load local global directories like `.ai-review/personas/` or arbitrary local Markdown files outside `.ai-review/<owner>/<repo>/...`.
+Локальные глобальные директории типа `.ai-review/personas/` не загружаются.
 
-### Context Primers
+### Контекстные праймеры
 
-The `context primers` command is a deterministic tool for pre-authoring context lookup. It does not make any AI calls or require a review run to exist. It is designed for external coding agents (like Codex, Claude Code, or Junie) to load relevant repository context before starting a change. It does not require `gh` to be installed as it operates on local files.
+Команда `context primers` — детерминированный инструмент для предзагрузки контекста. Не делает AI-вызовов и не требует `gh`. Предназначен для внешних coding-агентов (Codex, Claude Code, Junie и т.д.) для загрузки релевантного контекста перед началом изменений.
 
-Matches are determined by a combination of regular filters and authoring concepts:
-- **Regular Filters**: `path_filters` (matched against `--files`) and `function_filters` (matched against `--functions`).
-- **Authoring Concepts**: `authoring_concepts` (defined in primer frontmatter and matched against `--concepts`).
+Совпадения определяются комбинацией обычных фильтров и авторских концепций:
+- **Обычные фильтры**: `path_filters` (по `--files`) и `function_filters` (по `--functions`).
+- **Авторские концепции**: `authoring_concepts` (из frontmatter праймера, по `--concepts`).
 
-**Matching Rules:**
-- If a primer has `authoring_concepts` and the user provided `--concepts`, **both** the regular filters and at least one concept must match.
-- If the primer has no `authoring_concepts`, only regular filters must match.
-- If the user provided no `--concepts`, only regular filters must match.
-- If the user provided `--concepts` but the primer has no `authoring_concepts`, the concepts do not affect the match (only regular filters are checked).
-- Concept-only input (without `--files` or `--functions`) will only match primers that have no regular filters (or empty filters).
+**Правила совпадения:**
+- Если у праймера есть `authoring_concepts` и пользователь передал `--concepts` — должны совпасть **и** обычные фильтры, и хотя бы одна концепция.
+- Если у праймера нет `authoring_concepts` — только обычные фильтры.
+- Если пользователь не передал `--concepts` — только обычные фильтры.
+- Если пользователь передал `--concepts`, а у праймера нет `authoring_concepts` — концепции не влияют на совпадение.
+- Ввод только концепций (без `--files` или `--functions`) совпадает только с праймерами без обычных фильтров.
 
-#### Example Primer with Authoring Concepts:
+#### Пример праймера с авторскими концепциями:
 ```markdown
 ---
 id: governance-parameters
@@ -273,70 +275,70 @@ type: implementation
 authoring_concepts: ["governance", "params"]
 path_filters: ["./inference-chain/**/params.go"] 
 ---
-Parameters are controlled via governance votes...
+Параметры управляются через голосование...
 ```
 
-### Personas
+### Персоны
 
-Create persona files in `.ai-review/<owner>/<repo>/personas/` for local repo-scoped configuration, or commit them anywhere in the target repository with `ai_review: persona` in frontmatter. Personas support several fields in their YAML frontmatter:
+Создавайте файлы персон в `.ai-review/<владелец>/<репо>/personas/` или коммитьте их в любое место репозитория с `ai_review: persona` в frontmatter. Поля frontmatter:
 
 ```markdown
 ---
 id: security
-role: reviewer           # optional: reviewer (default) | explainer
-stage: pre              # optional: pre | post (only for explainers)
-include_findings: true  # optional: include the aggregated summary report (only for post-run explainers)
-include_explainers: ["state-modified"] # optional: list of pre-run explainer IDs to include their analysis for files
-exclude_diff: true      # optional: exclude the full unified diff and show stats instead
+role: reviewer           # опционально: reviewer (по умолч.) | explainer
+stage: pre              # опционально: pre | post (только для explainer)
+include_findings: true  # опционально: включить сводку (только для post-explainer)
+include_explainers: ["state-modified"] # опционально: ID пре-объяснителей для включения
+exclude_diff: true      # опционально: показывать статистику вместо полного диффа
 model_category: best_code
-max_tokens: 4096        # optional: overrides model category limit
-path_filters:           # optional: only run if these files changed
+max_tokens: 4096        # опционально: переопределяет лимит категории модели
+path_filters:           # опционально: только если изменились эти файлы
   - "inference-chain/**/*.go"
-exclude_filters:        # optional: ignore these files
+exclude_filters:        # опционально: игнорировать эти файлы
   - "**/*_test.go"
-regex_filters:          # optional: only include files where changed lines match any of these regexes
+regex_filters:          # опционально: только файлы где изменённые строки совпадают
   - "TODO"
-any:                    # optional: logical OR between sub-filters
+any:                    # опционально: логическое ИЛИ между подфильтрами
   - path_filters: ["src/legacy/**"]
   - regex_filters: ["TODO: rewrite"]
-all:                    # optional: logical AND between sub-filters
+all:                    # опционально: логическое И между подфильтрами
   - path_filters: ["**/*.go"]
   - any:
       - function_filters: ["HandleRequest"]
       - regex_filters: ["auth_check"]
-branch_filters:         # optional: only apply to specific branch globs
+branch_filters:         # опционально: только для конкретных веток (glob)
   - "main"
   - "release/*"
-function_filters:       # optional: only apply if specific functions are modified
+function_filters:       # опционально: только если изменены конкретные функции
   - "ProcessData"
-line_numbers_filter:    # optional: list of line ranges
+line_numbers_filter:    # опционально: диапазоны строк
   - start: 10
     end: 20
-date_filter: "2025-01-01" # optional: only apply if commit date is BEFORE this date
+date_filter: "2025-01-01" # опционально: только если дата коммита ДО этой даты
 ---
-You are a security expert. Review the following PR for security vulnerabilities.
+Вы — эксперт по безопасности. Проверьте PR на уязвимости.
 ```
 
-#### Roles and Stages
+#### Роли и стадии
 
-- **Reviewer**: (Default) Analyzes the code and produces findings. Findings are automatically normalized into structured data and later aggregated.
-- **Explainer (Pre)**: Runs before reviewers. Must output JSON (file-to-analysis mapping). Its analysis is injected into the context of all subsequent personas for that file.
-- **Explainer (Post)**: Runs after reviewers. Its full output is included in the final report under an "Explanations" section. Useful for providing human-readable guides or high-level summaries.
+- **Reviewer**: (по умолчанию) Анализирует код и выдаёт находки. Находки автоматически нормализуются и агрегируются.
+- **Explainer (Pre)**: Запускается до ревьюеров. Должен выводить JSON (маппинг файл → анализ). Анализ инжектируется в контекст последующих персон.
+- **Explainer (Post)**: Запускается после ревьюеров. Полный вывод включается в финальный отчёт в секцию «Объяснения». Полезен для человекочитаемых руководств.
 
-#### Advanced Logical Filtering
+#### Продвинутая логическая фильтрация
 
-Filters normally operate as a logical **AND** (a file must match the path filters AND the regex filters, etc.). For more complex logic, you can use `any` (OR) and `all` (AND) blocks, which can be nested arbitrarily:
+Фильтры по умолчанию работают как логическое **И**. Для сложной логики используйте блоки `any` (ИЛИ) и `all` (И), которые можно вкладывать произвольно:
 
-- **any**: The filter matches if *any* of its sub-filters match.
-- **all**: The filter matches only if *all* of its sub-filters match.
+- **any**: совпадение, если хотя бы один подфильтр совпадает.
+- **all**: совпадение, только если все подфильтры совпадают.
 
-Existing flat filters (like `path_filters` and `regex_filters` defined at the top level) continue to work as an implicit `all` block for backward compatibility.
+Плоские фильтры верхнего уровня продолжают работать как неявный блок `all`.
 
-### Primers
+### Праймеры
 
-Primers provide extra context, constraints, or blueprints to personas based on the specific files they are analyzing. They are included in the persona prompt only if the persona is analyzing files that match the primer's filters.
+Праймеры предоставляют дополнительный контекст, ограничения или шаблоны персонам на основе анализируемых файлов. Включаются в промпт персоны только если файлы совпадают с фильтрами праймера.
 
-Create primer files in `.ai-review/<owner>/<repo>/primers/` for local repo-scoped configuration, or commit them anywhere in the target repository with `ai_review: primer` in frontmatter. They support the same filtering fields as personas (`path_filters`, `exclude_filters`, `regex_filters`, `branch_filters`, `function_filters`, `line_numbers_filter`, `date_filter`):
+Создавайте в `.ai-review/<владелец>/<репо>/primers/` или коммитьте с `ai_review: primer` в frontmatter. Поддерживают те же фильтры что и персоны:
 
 ```markdown
 ---
@@ -345,17 +347,17 @@ type: blueprint
 path_filters:
   - "inference-chain/**/*.go"
 ---
-When modifying the inference chain, ensure that you follow the established patterns:
+При изменении inference chain соблюдайте установленные паттерны:
 1. ...
 ```
 
-The `type` field matches the types defined in `config.yaml` to provide additional intent to the AI.
+Поле `type` соответствует типам из `config.yaml` и даёт дополнительный контекст AI.
 
-### Waivers
+### Вейверы
 
-Waivers allow you to automatically suppress specific findings based on predefined rules. This is useful for ignoring known issues, legacy code patterns, or false positives.
+Вейверы позволяют автоматически подавлять конкретные находки по заранее определённым правилам. Полезны для игнорирования известных проблем, легаси-паттернов или ложных срабатываний.
 
-Create waiver files in `.ai-review/<owner>/<repo>/waivers/` for local repo-scoped configuration, or commit them anywhere in the target repository with `ai_review: waiver` in frontmatter. Waivers use the same filters as Personas and Primers to determine their applicability to a finding's location.
+Создавайте в `.ai-review/<владелец>/<репо>/waivers/` или коммитьте с `ai_review: waiver` в frontmatter. Используют те же фильтры что персоны и праймеры.
 
 ```markdown
 ---
@@ -365,83 +367,83 @@ path_filters:
   - "legacy/auth/**/*.go"
 date_filter: "2024-01-01"
 ---
-We are aware of the weak hashing in the legacy auth module, but it is scheduled for decommissioning and should not be flagged in new PRs unless the logic is significantly altered.
+Мы знаем о слабом хешировании в легаси-модуле авторизации, но он запланирован к выводу из эксплуатации и не должен флагироваться в новых PR, если логика существенно не изменилась.
 ```
 
-#### How Waivers Work
+#### Как работают вейверы
 
-1. **Location Filtering**: When a reviewer produces a finding, the tool checks for any Waivers whose filters (`path_filters`, `branch_filters`, etc.) match the finding's location.
-2. **LLM Validation**: If a waiver's location matches, the tool sends the finding's details, the relevant code diff, and the waiver's instructions to an LLM (specified by `model_category`).
-3. **Decision**: The LLM determines if the waiver truly applies to this specific issue.
-4. **Reporting**: Waived issues are excluded from the main sections of the report ("Must Fix", etc.) and listed in a separate "Waived Issues" section at the end of the report.
+1. **Фильтрация по локации**: при появлении находки проверяются вейверы, чьи фильтры совпадают с локацией находки.
+2. **LLM-валидация**: если локация совпадает — детали находки, диф и инструкции вейвера отправляются в LLM (указанную в `model_category`).
+3. **Решение**: LLM определяет, применим ли вейвер к конкретной проблеме.
+4. **Отчётность**: подавленные находки исключаются из основных секций отчёта и выводятся в отдельную секцию «Waived Issues».
 
-#### Token Limit Precedence
+#### Приоритет лимита токенов
 
-The maximum tokens for a response is determined by (highest priority first):
-1. `--max-tokens` CLI flag
-2. `max_tokens` in persona frontmatter
-3. `max_tokens` in `config.yaml` model mapping
+Максимальное число токенов определяется в порядке убывания приоритета:
+1. Флаг `--max-tokens`
+2. `max_tokens` во frontmatter персоны
+3. `max_tokens` в маппинге модели `config.yaml`
 
-## Repository Storage
+## Хранение репозиториев
 
-By default, the tool clones repositories into a `.repos` directory relative to the current working directory. This directory is organized by owner and repository name (e.g., `.repos/google/go-github`). If you are already inside the target repository (or a subdirectory of it), the tool will use it directly instead of cloning.
+По умолчанию инструмент клонирует репозитории в директорию `.repos` относительно текущей рабочей директории, организованную по владельцу и имени репозитория (например, `.repos/google/go-github`). Если вы уже находитесь внутри целевого репозитория, инструмент использует его напрямую.
 
-A `.gitignore` file is provided in the project root to ensure that the `.repos` directory and the compiled `ai-review` binary are not tracked by version control.
+Файл `.gitignore` гарантирует, что `.repos` и скомпилированный бинарник `ai-review` не попадут в систему контроля версий.
 
-## How it works
+## Как это работает
 
-The tool executes a multi-stage pipeline:
+Инструмент выполняет многостадийный конвейер:
 
-1. **Fetch Context**: Uses `gh` CLI and `git` to fetch PR details and compute the unified diff.
-2. **Pre-run Explainers**: Executes personas with `role: explainer` and `stage: pre`. They provide initial research that is injected into later prompts.
-3. **Reviewers**: Executes standard personas. If any **Primers** match the files being analyzed by a persona, they are injected into its prompt as extra context. Each reviewer's raw output is immediately processed by a **Normalization** step (using a cheap model) to extract structured findings (file, line, summary, severity).
-4. **Waiver Evaluation**: Any findings produced by reviewers are checked against applicable **Waivers**. If a waiver matches the location and is confirmed by an LLM, the finding is marked as waived.
-5. **Post-run Explainers**: Executes personas with `role: explainer` and `stage: post`. They provide high-level context or human instructions.
-6. **Aggregation**: All non-waived findings from all reviewers are sent to an **Aggregator** LLM (using the `balanced` model category). It deduplicates issues, clusters related findings, and produces a concise Markdown summary.
-7. **Reporting**: The final report is printed to stdout and saved to the run directory. Waived findings are listed in a separate section.
+1. **Получение контекста**: `gh` CLI и `git` для получения деталей PR и вычисления unified diff.
+2. **Пре-объяснители**: персоны с `role: explainer` и `stage: pre`. Результат инжектируется в последующие промпты.
+3. **Ревьюеры**: стандартные персоны. Подходящие **праймеры** инжектируются как дополнительный контекст. Сырой вывод каждого ревьюера сразу нормализуется дешёвой моделью в структурированные находки (файл, строка, сводка, важность).
+4. **Оценка вейверов**: находки проверяются по применимым **вейверам**. При совпадении локации и подтверждении LLM находка помечается как подавленная.
+5. **Пост-объяснители**: персоны с `role: explainer` и `stage: post`. Дают высокоуровневый контекст или инструкции для разработчика.
+6. **Агрегация**: все неподавленные находки отправляются в **агрегатор** LLM (категория `balanced`). Он дедуплицирует проблемы, кластеризует связанные находки и создаёт краткое Markdown-резюме.
+7. **Отчётность**: финальный отчёт выводится в stdout и сохраняется в директорию запуска. Подавленные находки вынесены в отдельную секцию.
 
-## Output and Artifacts
+## Выходные данные и артефакты
 
-Each run generates a timestamped directory in `.ai-review/<repo_owner>/<repo_name>/runs/<target_id>/<timestamp>/` containing:
-- `target_id` is the PR number (for PR reviews), the short commit hash (for commit reviews), `file-<branch_name>` (for file reviews), or `branches-<target_repo>` (for branch reviews).
-- `summary.md`: The aggregated Markdown summary.
-- `report.md`: The full report including explanations and stats.
-- `all_findings.json`: All normalized findings from all personas.
-- `agent_handoff.md`: A handoff prompt for a coding agent to help with review triage.
-- `persona_name/`: Subdirectories for each persona containing their `raw.md` output and `findings.json` (or `parsed.json`).
+Каждый запуск создаёт директорию с временной меткой в `.ai-review/<владелец>/<репо>/runs/<target_id>/<timestamp>/`:
+- `target_id` — номер PR, короткий хэш коммита, `file-<ветка>` или `branches-<репо>`.
+- `summary.md`: агрегированное Markdown-резюме.
+- `report.md`: полный отчёт с объяснениями и статистикой.
+- `all_findings.json`: все нормализованные находки от всех персон.
+- `agent_handoff.md`: промпт для передачи coding-агенту для триажа ревью.
+- `persona_name/`: поддиректории для каждой персоны с `raw.md` и `findings.json`.
 
-Stats and token usage are also appended to `.ai-review/<repo_owner>/<repo_name>/run-log.jsonl`.
+Статистика и использование токенов дописываются в `.ai-review/<владелец>/<репо>/run-log.jsonl`.
 
-## Cost Tracking
+## Учёт стоимости
 
-The final report includes a "Stats" section with:
-- Token usage (In/Out) per persona and pipeline step.
-- Estimated cost per step based on prices in `config.yaml`.
-- Total estimated cost for the run.
-- Usage summary grouped by model.
+Финальный отчёт включает секцию «Stats»:
+- Использование токенов (вход/выход) по персонам и шагам конвейера.
+- Расчётная стоимость каждого шага на основе цен из `config.yaml`.
+- Итоговая расчётная стоимость запуска.
+- Сводка использования по моделям.
 
-## Context Evaluation
+## Оценка контекста
 
-The `--context-eval` flag allows you to analyze and optimize the context being sent to each AI persona without performing a full review. This is crucial for staying within model token limits and understanding which parts of your prompt are consuming the most space.
+Флаг `--context-eval` позволяет анализировать и оптимизировать контекст, отправляемый каждой AI-персоне, без полного ревью. Критически важен для соблюдения лимитов токенов модели.
 
-### How it works:
-1. **Runs Pre-Run Explainers**: Since explainers provide context for subsequent reviewers, they are executed to get their actual output.
-2. **Builds Full Prompts**: The tool constructs the exact prompt that would be sent to each persona, including persona instructions, matched primers, explainer outputs, and file diffs.
-3. **Token Counting**: Uses `tiktoken` with the correct encoding for the selected model to provide accurate token counts.
-4. **Breakdown Report**: Generates a detailed breakdown for each persona:
-    - **Persona**: The base instructions for the persona.
-    - **Primers**: Breakdown of tokens for each matched primer.
-    - **Explainers**: Tokens from pre-run explainer analysis.
-    - **Diffs**: Breakdown of tokens for each file's diff.
-    - **Other**: Primers, instructions, and other metadata.
+### Как работает:
+1. **Запускает пре-объяснители**: поскольку объяснители предоставляют контекст для ревьюеров, они выполняются для получения реального вывода.
+2. **Строит полные промпты**: инструмент конструирует точный промпт для каждой персоны, включая инструкции, праймеры, вывод объяснителей и диффы файлов.
+3. **Подсчёт токенов**: использует `tiktoken` с правильной кодировкой для точного подсчёта.
+4. **Детальный отчёт** по каждой персоне:
+    - **Persona**: базовые инструкции персоны.
+    - **Primers**: токены для каждого совпавшего праймера.
+    - **Explainers**: токены от пре-объяснителей.
+    - **Diffs**: токены для диффа каждого файла.
+    - **Other**: праймеры, инструкции и прочие метаданные.
 
-### Visualization with CSV:
-Using `--context-eval-csv <filename.csv>` generates a flat data file suitable for TreeMap visualizations (like those in Excel or specialized tools). Each row includes:
-- **Tokens**: Accurate token count for that specific component.
-- **Chars**: Character count for that component.
-- **Cost**: Estimated cost for that specific component (PPM tokens estimate).
-- **Model**: The model used for this calculation (e.g., `gpt-4o(high)`).
-- **Persona**: The ID of the persona.
-- **Category**: The context category (e.g., `diff`, `primers`).
-- **Label**: The deepest level of the hierarchical path (e.g., filename, primer ID, or category).
-- **Path**: A hierarchical identifier using commas as separators, double-quoted: `"persona,category,subcategory,filename"` (e.g., `"security,diff,src,main.go"`).
+### Визуализация через CSV:
+`--context-eval-csv <файл>` генерирует плоский файл для TreeMap-визуализаций (Excel и другие инструменты). Каждая строка включает:
+- **Tokens**: точное число токенов компонента.
+- **Chars**: число символов компонента.
+- **Cost**: расчётная стоимость компонента.
+- **Model**: используемая модель (например, `gpt-4o(high)`).
+- **Persona**: ID персоны.
+- **Category**: категория контекста (например, `diff`, `primers`).
+- **Label**: самый глубокий уровень иерархического пути (имя файла, ID праймера и т.д.).
+- **Path**: иерархический идентификатор через запятые: `"персона,категория,подкатегория,файл"`.

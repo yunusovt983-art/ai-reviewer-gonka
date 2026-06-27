@@ -142,22 +142,22 @@ DDD начинается с языка. Вот глоссарий `ai-reviewer` 
             планирует прогон          │ дирижирует
         ┌─────────────────────────────┼──────────────────────────────┐
         ▼                             ▼                                ▼
-┌───────────────┐         ┌────────────────────────┐       ┌────────────────────┐
+┌────────────────┐        ┌─────────────────────────┐       ┌────────────────────┐
 │  REVIEW POLICY │        │     REVIEW DOMAIN       │       │   CODE CONTEXT     │
 │   (артефакты)  │        │  (ядро доменной логики) │       │  (ревьюируемый мир)│
 │ scanner.go     │ корми- │ persona.go  pipeline.go │ берёт │ context.go  git.go │
-│ config.go      │  т ───▶ │ primer.go   waiver.go   │ ◀──── │ PRInfo/PRContext   │
-│ Persona/Primer │        │ Finding · normalize ·   │ контекст FileContext     │
+│ config.go      │ т ───▶ │ primer.go   waiver.go   │ ◀──── │ PRInfo/PRContext   │
+│ Persona/Primer │        │ Finding · normalize ·   │ контекст FileContext       │
 │ /Waiver/Config │        │ aggregate · waive       │       │ FilterSet · diff   │
-└───────────────┘         └───────────┬────────────┘       └────────────────────┘
-                                       │ вызывает
-                                       ▼
-                          ┌────────────────────────────┐
+└────────────────┘        └───────────┬─────────────┘       └────────────────────┘
+                                      │ вызывает
+                                      ▼
+                          ┌─────────────────────────────┐
                           │   MODEL ACCESS (ACL)        │
                           │   models.go                 │
                           │   ModelClient интерфейс ·   │
                           │   OpenAI / Anthropic /Gemini│
-                          └────────────────────────────┘
+                          └─────────────────────────────┘
 ```
 
 ### 2.1. Review Domain (ядро)
